@@ -1,0 +1,69 @@
+# Image Recompress 插件配置
+# 各字段含义详见 README.md；默认值与插件配置模型保持一致。
+
+[plugin]
+# 是否启用插件
+enabled = true
+# 配置版本
+config_version = "1.1.0"
+
+[trigger]
+# 触发模式：always = 所有入站图片都重压缩；oversized_only = 仅压缩超过 size_threshold 的图片
+mode = "always"
+# 图片大小阈值（MB）：oversized_only 模式下作为触发条件，同时作为压缩的大小目标；
+# 0 表示无大小目标，仅转换格式
+size_threshold_mb = 1.0
+# 小于该大小（KB）的图片不处理（压缩收益太小）
+min_source_size_kb = 4.0
+# 无条件跳过的源格式列表（小写），例如 ["gif", "bmp"]
+skip_source_formats = []
+# 源图片格式已经是输出格式、且大小未超过 size_threshold_mb（或无大小目标）时跳过，
+# 避免对已达标的图片做重复有损压缩造成画质劣化
+skip_if_already_target = true
+# 是否递归处理合并转发消息节点内的图片
+process_forward = true
+
+[output]
+# 输出格式：webp / jpeg / png
+format = "webp"
+# webp / jpeg 的编码质量上限（1-100，png 忽略）。这只是最高质量：
+# 图片超过大小阈值时，实际编码质量会由估算 / 搜索从这里往下调
+max_quality = 80
+# WebP 无损模式（仅 format = "webp" 时有效）。无损与 png 输出固定使用最高压缩率参数编码，
+# 无法通过降质量缩小体积，超过大小阈值时只能缩小图片像素尺寸
+lossless = false
+# WebP 有损编码 method（0-6）：越大压缩率越高但越慢；动图较多时建议不超过 4；无损模式固定用 6
+webp_method = 4
+# 仅当压缩结果比原图更小时才替换，否则保留原图
+keep_only_if_smaller = true
+# 静态图最长边像素上限，超过先等比预缩放再编码；0 表示不限制（动图不受此限制）
+max_dimension = 2048
+
+[animated]
+# 动图处理策略：animated_webp = 整体转动态 WebP；skip = 原样放行；first_frame = 只保留首帧
+# 输出格式不是 webp 时 animated_webp 自动退化为 skip
+policy = "animated_webp"
+# 动图帧数上限，超过则跳过该图（防止超长 GIF 编码耗时过久）；0 表示不限制
+max_frames = 512
+
+[advanced]
+# 只对全尺寸图片编码一次：用小图试编码快速估算达到大小目标所需的质量（远快于实际压图），
+# 结果允许在目标附近上下浮动；关闭则改用多轮“质量搜索 + 缩放”循环精确逼近目标
+single_pass_only = true
+# 仅 single_pass_only 模式的数学估算使用：估算目标 = size_threshold_mb × 该比例，
+# 预留些许上下浮动空间；循环模式不受影响，直接以 size_threshold_mb 为目标
+target_ratio = 0.9
+# 质量估算 / 搜索允许的最低质量，低于此值改为缩小图片尺寸
+quality_floor = 10
+# 循环模式下自适应质量搜索的最大轮数（仅 single_pass_only = false 时生效）
+quality_search_iterations = 6
+# 循环模式下质量到达下限仍超标时循环缩小尺寸的最大轮数（仅 single_pass_only = false 时生效）
+downscale_iterations = 8
+# 每条消息处理后输出一行压缩统计日志
+log_stats = true
+# 输出每张图片的详细处理日志（格式、大小、耗时、跳过原因）
+verbose = false
+
+[performance]
+# 同一条消息内并行压缩的图片数量上限
+max_parallel_images = 4
