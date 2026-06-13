@@ -2,6 +2,23 @@
 
 把入站消息中的图片重压缩为更高效的 **WebP**（也可配置 JPEG / PNG），替代主程序内置的 JPEG 压缩。支持动图转动态 WebP、仅压缩超大图、压到目标大小等多种模式。
 
+> **⚠️ 使用前必读**
+>
+> **务必**在 `bot_config.toml` 关闭麦麦默认的「处理过大图片」（`visual.handle_oversized_images`），否则同一张图片可能被**连续压缩三次**，画质严重劣化：
+>
+> ```toml
+> [visual]
+> handle_oversized_images = false
+> ```
+>
+> | 顺序 | 环节 | 说明 |
+> |---|---|---|
+> | 1 | 主程序内置压缩 | 在本插件 Hook **之前**执行，硬编码 JPEG |
+> | 2 | 本插件 | `chat.receive.before_process` 中重编码为 WebP 等 |
+> | 3 | VLM 识图链路 | 送 API 前可能再次压图（如转 JPEG、缩尺寸） |
+>
+> 本插件用于**替代**内置压缩，而不是与内置压缩叠加。插件加载时若检测到该选项仍为开启，会输出警告日志。
+
 ## 工作原理
 
 主程序的内置图片压缩硬编码 JPEG，且在消息 Hook 之前执行：
@@ -13,21 +30,16 @@
             └─ 消息正式进入处理链（存储、识图、回复……）
 ```
 
-本插件订阅 `chat.receive.before_process`（BLOCKING / EARLY），把消息里的图片组件解码后用 Pillow 重新编码为目标格式，再写回消息。**因此必须关闭内置压缩**，否则超大图会先被压成 JPEG 才轮到本插件：
+本插件订阅 `chat.receive.before_process`（BLOCKING / EARLY），把消息里的图片组件解码后用 Pillow 重新编码为目标格式，再写回消息。
 
-```toml
-# bot_config.toml
-[visual]
-handle_oversized_images = false
-```
-
-插件加载时会检测该配置，未关闭会输出警告日志。
+若不关闭 `visual.handle_oversized_images`，超大图会先被主程序压成 JPEG，再经本插件重压缩，后续识图时还可能第三次压图——详见文首警告。
 
 ## 安装
 
-1. 将本仓库放入（或软链到）MaiBot 的 `plugins/` 目录；
-2. 依赖 `pillow>=10.0.0` 由 Host 依赖解析器自动安装；
-3. 重启 MaiBot，日志中出现 `图片重压缩插件已加载` 即成功。
+1. **先在** `bot_config.toml` **关闭** `visual.handle_oversized_images`（见文首警告）；
+2. 将本仓库放入（或软链到）MaiBot 的 `plugins/` 目录；
+3. 依赖 `pillow>=10.0.0` 由 Host 依赖解析器自动安装；
+4. 重启 MaiBot，日志中出现 `图片重压缩插件已加载` 即成功。
 
 ## 配置说明
 
@@ -96,6 +108,7 @@ handle_oversized_images = false
 
 ## 性能与注意事项
 
+- **再次提醒**：未关闭 `visual.handle_oversized_images` 时，同一张图可能经历内置压缩 → 本插件 → VLM 送图三轮有损重编码。
 - 插件运行在独立 Runner 进程；`chat.receive.before_process` 是 BLOCKING Hook，**这条消息**的处理链必须等压缩结果（Hook 语义决定），但 Pillow 编码在 C 库层释放 GIL，压缩在线程池执行，不会卡住插件事件循环，多图可真正并行。
 - `webp_method` 越大编码越慢：静态图通常无感，动图帧多时差异明显，默认 `4` 是质量/速度的平衡点。
 - 替换图片字节后插件会同步重写组件的 sha256 hash，下游存储与识图按新 WebP 数据正常工作。

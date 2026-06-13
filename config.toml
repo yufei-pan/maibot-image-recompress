@@ -1,5 +1,16 @@
 # Image Recompress 插件配置
 # 各字段含义详见 README.md；默认值与插件配置模型保持一致。
+#
+# ⚠️ 使用前必读：务必在 bot_config.toml 或者webui关闭主程序默认的「处理过大图片」：
+#
+#   [visual]
+#   handle_oversized_images = false
+#
+# 主程序内置压缩在本插件 Hook 之前执行（硬编码 JPEG）。若不关闭，同一张超大图可能依次经历：
+#   1. 主程序内置压缩（visual.handle_oversized_images）
+#   2. 本插件重压缩（WebP / JPEG / PNG）
+#   3. 后续 VLM 识图送 API 时可能再次压图
+# 三轮有损重编码会严重劣化画质。本插件的设计是替代内置压缩，而不是叠加使用。
 
 [plugin]
 # 是否启用插件
@@ -47,8 +58,9 @@ policy = "animated_webp"
 max_frames = 512
 
 [advanced]
-# 只对全尺寸图片编码一次：用小图试编码快速估算达到大小目标所需的质量（远快于实际压图），
+# 只对全尺寸图片编码一次：用小图试编码快速估算达到大小目标所需的质量，
 # 结果允许在目标附近上下浮动；关闭则改用多轮“质量搜索 + 缩放”循环精确逼近目标
+# 如果对自己的cpu有自信可以关闭single_pass让插件循环找到符合目标大小的质量参数
 single_pass_only = true
 # 仅 single_pass_only 模式的数学估算使用：估算目标 = size_threshold_mb × 该比例，
 # 预留些许上下浮动空间；循环模式不受影响，直接以 size_threshold_mb 为目标
