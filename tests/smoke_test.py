@@ -110,31 +110,29 @@ def test_plugin_importable() -> None:
     assert instance is not None
     default_config = type(instance).build_default_config()
     assert default_config["plugin"]["enabled"] is True
-    assert default_config["trigger"]["mode"] == "always"
-    assert default_config["trigger"]["size_threshold_mb"] == 1.0
-    assert default_config["trigger"]["min_source_size_kb"] == 4.0
-    assert default_config["output"]["format"] == "webp"
-    assert default_config["output"]["max_quality"] == 80
-    assert "quality" not in default_config["output"]
-    assert default_config["animated"]["policy"] == "keep_animated"
-    assert default_config["animated"]["max_frames"] == 512
-    assert default_config["output"]["max_dimension"] == 4096
-    assert default_config["advanced"]["quality_floor"] == 10
-    assert default_config["advanced"]["single_pass_only"] is True
-    assert default_config["advanced"]["target_ratio"] == 0.9
-    assert "target_size" not in default_config["advanced"]
-    assert default_config["performance"]["max_parallel_images"] == 4
+    assert default_config["plugin"]["config_version"] == recompress_plugin.CURRENT_CONFIG_VERSION
+    assert default_config["trigger"]["mode"] == ""
+    assert default_config["trigger"]["size_threshold_mb"] is None
+    assert default_config["output"]["format"] == ""
+    assert default_config["output"]["max_quality"] is None
+    assert default_config["animated"]["policy"] == ""
+    assert default_config["performance"]["max_parallel_images"] is None
 
-    # config.toml 与配置模型字段一致（允许 config.toml 省略字段，不允许多出字段）
+    effective = recompress_plugin.resolve_effective_config(
+        recompress_plugin.ImageRecompressConfig.model_validate(default_config)
+    )
+    assert effective.mode == recompress_plugin.DEFAULT_TRIGGER_MODE
+    assert effective.size_threshold_mb == recompress_plugin.DEFAULT_SIZE_THRESHOLD_MB
+    assert effective.out_format == recompress_plugin.DEFAULT_OUTPUT_FORMAT
+    assert effective.max_quality == recompress_plugin.DEFAULT_MAX_QUALITY
+    assert effective.max_parallel_images == recompress_plugin.DEFAULT_MAX_PARALLEL_IMAGES
+
+    # config.toml 与配置模型字段一致（允许省略留空字段，不允许多出未知字段）
     config_data = tomllib.loads((PLUGIN_DIR / "config.toml").read_text(encoding="utf-8"))
     for section, fields in config_data.items():
         assert section in default_config, f"config.toml 中存在未知配置节：{section}"
         for field in fields:
             assert field in default_config[section], f"config.toml 中存在未知字段：{section}.{field}"
-    # 默认值一致性
-    for section, fields in config_data.items():
-        for field, value in fields.items():
-            assert default_config[section][field] == value, f"config.toml 默认值不一致：{section}.{field}"
     print("ok: plugin importable, config model consistent")
 
 

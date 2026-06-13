@@ -20,6 +20,7 @@ import base64
 import hashlib
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Iterator
@@ -42,6 +43,34 @@ VALID_ANIMATED_POLICIES = ("keep_animated", "skip", "first_frame")
 # 能承载动画的输出格式：webp→动态 WebP，png→APNG；jpeg 不支持
 ANIMATED_CAPABLE_FORMATS = ("webp", "png")
 
+CURRENT_CONFIG_VERSION = "1.2.0"
+
+DEFAULT_TRIGGER_MODE = "always"
+DEFAULT_SIZE_THRESHOLD_MB = 1.0
+DEFAULT_MIN_SOURCE_SIZE_KB = 4.0
+DEFAULT_SKIP_IF_ALREADY_TARGET = True
+DEFAULT_PROCESS_FORWARD = True
+
+DEFAULT_OUTPUT_FORMAT = "webp"
+DEFAULT_MAX_QUALITY = 80
+DEFAULT_LOSSLESS = False
+DEFAULT_WEBP_METHOD = 4
+DEFAULT_KEEP_ONLY_IF_SMALLER = True
+DEFAULT_MAX_DIMENSION = 4096
+
+DEFAULT_ANIMATED_POLICY = "keep_animated"
+DEFAULT_MAX_FRAMES = 512
+
+DEFAULT_SINGLE_PASS_ONLY = True
+DEFAULT_TARGET_RATIO = 0.9
+DEFAULT_QUALITY_FLOOR = 10
+DEFAULT_QUALITY_SEARCH_ITERATIONS = 6
+DEFAULT_DOWNSCALE_ITERATIONS = 8
+DEFAULT_LOG_STATS = True
+DEFAULT_VERBOSE = False
+
+DEFAULT_MAX_PARALLEL_IMAGES = 4
+
 # 动图帧缺省时长（毫秒），与 Pillow 对 GIF 的常见缺省值一致
 DEFAULT_FRAME_DURATION_MS = 100
 
@@ -63,7 +92,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="1.1.0", description="配置版本")
+    config_version: str = Field(default=CURRENT_CONFIG_VERSION, description="配置版本")
 
 
 class TriggerSectionConfig(PluginConfigBase):
@@ -74,34 +103,39 @@ class TriggerSectionConfig(PluginConfigBase):
     __ui_order__ = 1
 
     mode: str = Field(
-        default="always",
-        description="触发模式：always=所有入站图片都重压缩；oversized_only=仅压缩超过 size_threshold 的图片。",
+        default="",
+        description="触发模式：always=所有入站图片都重压缩；oversized_only=仅压缩超过 size_threshold 的图片。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": DEFAULT_TRIGGER_MODE},
     )
-    size_threshold_mb: float = Field(
-        default=1.0,
+    size_threshold_mb: float | None = Field(
+        default=None,
         description=(
-            "图片大小阈值（MB，默认 1）：oversized_only 模式下作为触发条件，同时作为压缩的大小目标。"
-            "0 表示无大小目标，仅转换格式。"
+            "图片大小阈值（MB）：oversized_only 模式下作为触发条件，同时作为压缩的大小目标。"
+            "0 表示无大小目标，仅转换格式。留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_SIZE_THRESHOLD_MB)},
     )
-    min_source_size_kb: float = Field(
-        default=4.0,
-        description="小于该大小（KB）的图片不处理（压缩收益太小，默认 4 KB）。",
+    min_source_size_kb: float | None = Field(
+        default=None,
+        description="小于该大小（KB）的图片不处理（压缩收益太小）。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_MIN_SOURCE_SIZE_KB)},
     )
     skip_source_formats: list[str] = Field(
         default_factory=list,
         description='无条件跳过的源格式列表（小写），例如 ["gif", "bmp"]。',
     )
-    skip_if_already_target: bool = Field(
-        default=True,
+    skip_if_already_target: bool | None = Field(
+        default=None,
         description=(
             "源图片格式已经是输出格式、且大小未超过 size_threshold_mb（或无大小目标）时跳过，"
-            "避免对已达标的图片做重复有损压缩造成画质劣化。"
+            "避免对已达标的图片做重复有损压缩造成画质劣化。留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_SKIP_IF_ALREADY_TARGET).lower()},
     )
-    process_forward: bool = Field(
-        default=True,
-        description="是否递归处理合并转发消息节点内的图片（转发可多层嵌套）。",
+    process_forward: bool | None = Field(
+        default=None,
+        description="是否递归处理合并转发消息节点内的图片（转发可多层嵌套）。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_PROCESS_FORWARD).lower()},
     )
 
 
@@ -113,38 +147,50 @@ class OutputSectionConfig(PluginConfigBase):
     __ui_order__ = 2
 
     format: str = Field(
-        default="webp",
-        description="输出格式：webp / jpeg / png。webp 在同等画质下体积通常最小。",
+        default="",
+        description="输出格式：webp / jpeg / png。webp 在同等画质下体积通常最小。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": DEFAULT_OUTPUT_FORMAT},
     )
-    max_quality: int = Field(
-        default=80,
+    max_quality: int | None = Field(
+        default=None,
+        ge=1,
+        le=100,
         description=(
             "webp / jpeg 的编码质量上限（1-100，png 忽略）。"
             "这只是最高质量：图片超过大小阈值时，实际编码质量会由估算 / 搜索从这里往下调。"
+            "留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_MAX_QUALITY)},
     )
-    lossless: bool = Field(
-        default=False,
+    lossless: bool | None = Field(
+        default=None,
         description=(
             "WebP 无损模式（仅 format=webp 时有效）。无损与 png 输出固定使用最高压缩率参数编码"
             "（webp 无损为 quality=100 + method=6，png 为 compress_level=9），"
-            "无法通过降质量缩小体积，超过大小阈值时只能缩小图片像素尺寸。"
+            "无法通过降质量缩小体积，超过大小阈值时只能缩小图片像素尺寸。留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_LOSSLESS).lower()},
     )
-    webp_method: int = Field(
-        default=4,
-        description="WebP 有损编码 method（0-6）：越大压缩率越高但越慢；动图较多时建议不超过 4。无损模式固定用 6。",
+    webp_method: int | None = Field(
+        default=None,
+        ge=0,
+        le=6,
+        description="WebP 有损编码 method（0-6）：越大压缩率越高但越慢；动图较多时建议不超过 4。无损模式固定用 6。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_WEBP_METHOD)},
     )
-    keep_only_if_smaller: bool = Field(
-        default=True,
-        description="仅当压缩结果比原图更小时才替换，否则保留原图。",
+    keep_only_if_smaller: bool | None = Field(
+        default=None,
+        description="仅当压缩结果比原图更小时才替换，否则保留原图。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_KEEP_ONLY_IF_SMALLER).lower()},
     )
-    max_dimension: int = Field(
-        default=4096,
+    max_dimension: int | None = Field(
+        default=None,
+        ge=0,
         description=(
             "静态图最长边像素上限，超过先等比预缩放再编码（避免在超大图上浪费压缩计算）；"
-            "0 表示不限制。动图不受此限制。"
+            "0 表示不限制。动图不受此限制。留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_MAX_DIMENSION)},
     )
 
 
@@ -156,16 +202,19 @@ class AnimatedSectionConfig(PluginConfigBase):
     __ui_order__ = 3
 
     policy: str = Field(
-        default="keep_animated",
+        default="",
         description=(
             "动图处理策略：keep_animated=保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；"
             "skip=动图原样放行；first_frame=只保留首帧转静态图。"
-            "输出格式为 jpeg（无法承载动画）时 keep_animated 自动退化为 skip。"
+            "输出格式为 jpeg（无法承载动画）时 keep_animated 自动退化为 skip。留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": DEFAULT_ANIMATED_POLICY},
     )
-    max_frames: int = Field(
-        default=512,
-        description="动图帧数上限，超过则跳过该图（防止超长 GIF 编码耗时过久）；0 表示不限制。",
+    max_frames: int | None = Field(
+        default=None,
+        ge=0,
+        description="动图帧数上限，超过则跳过该图（防止超长 GIF 编码耗时过久）；0 表示不限制。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_MAX_FRAMES)},
     )
 
 
@@ -176,40 +225,55 @@ class AdvancedSectionConfig(PluginConfigBase):
     __ui_icon__ = "settings"
     __ui_order__ = 4
 
-    single_pass_only: bool = Field(
-        default=True,
+    single_pass_only: bool | None = Field(
+        default=None,
         description=(
             "只对全尺寸图片编码一次：先用小图试编码快速估算达到大小目标所需的质量（远快于实际压图），"
             "再按估算质量单次编码，结果允许在目标附近上下浮动；"
             "关闭则改用多轮“质量搜索 + 缩放”循环精确逼近目标。仅对静态图生效，lossless 模式下不启用。"
+            "留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_SINGLE_PASS_ONLY).lower()},
     )
-    target_ratio: float = Field(
-        default=0.9,
+    target_ratio: float | None = Field(
+        default=None,
+        ge=0.1,
+        le=1.0,
         description=(
             "仅 single_pass_only 模式的数学估算使用：估算目标 = size_threshold_mb × 该比例，"
-            "预留些许上下浮动空间（默认 0.9）。循环模式不受影响，直接以 size_threshold_mb 为目标。"
+            "预留些许上下浮动空间。循环模式不受影响，直接以 size_threshold_mb 为目标。"
+            "留空使用插件内置默认。"
         ),
+        json_schema_extra={"placeholder": str(DEFAULT_TARGET_RATIO)},
     )
-    quality_floor: int = Field(
-        default=10,
-        description="质量估算 / 搜索允许的最低质量，低于此值改为缩小图片尺寸。",
+    quality_floor: int | None = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description="质量估算 / 搜索允许的最低质量，低于此值改为缩小图片尺寸。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_QUALITY_FLOOR)},
     )
-    quality_search_iterations: int = Field(
-        default=6,
-        description="循环模式下自适应质量搜索的最大轮数（按 q × sqrt(目标/实际) 启发式跳跃）。仅 single_pass_only = false 时生效。",
+    quality_search_iterations: int | None = Field(
+        default=None,
+        ge=1,
+        description="循环模式下自适应质量搜索的最大轮数（按 q × sqrt(目标/实际) 启发式跳跃）。仅 single_pass_only = false 时生效。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_QUALITY_SEARCH_ITERATIONS)},
     )
-    downscale_iterations: int = Field(
-        default=8,
-        description="循环模式下质量到达下限仍超标时，循环缩小尺寸的最大轮数。仅 single_pass_only = false 时生效。",
+    downscale_iterations: int | None = Field(
+        default=None,
+        ge=0,
+        description="循环模式下质量到达下限仍超标时，循环缩小尺寸的最大轮数。仅 single_pass_only = false 时生效。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_DOWNSCALE_ITERATIONS)},
     )
-    log_stats: bool = Field(
-        default=True,
-        description="每条消息处理后输出一行压缩统计日志。",
+    log_stats: bool | None = Field(
+        default=None,
+        description="每条消息处理后输出一行压缩统计日志。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_LOG_STATS).lower()},
     )
-    verbose: bool = Field(
-        default=False,
-        description="输出每张图片的详细处理日志（格式、大小、耗时、跳过原因）。",
+    verbose: bool | None = Field(
+        default=None,
+        description="输出每张图片的详细处理日志（格式、大小、耗时、跳过原因）。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_VERBOSE).lower()},
     )
 
 
@@ -220,9 +284,11 @@ class PerformanceSectionConfig(PluginConfigBase):
     __ui_icon__ = "zap"
     __ui_order__ = 5
 
-    max_parallel_images: int = Field(
-        default=4,
-        description="同一条消息内并行压缩的图片数量上限（线程池并发，信号量控制）。",
+    max_parallel_images: int | None = Field(
+        default=None,
+        ge=1,
+        description="同一条消息内并行压缩的图片数量上限（线程池并发，信号量控制）。留空使用插件内置默认。",
+        json_schema_extra={"placeholder": str(DEFAULT_MAX_PARALLEL_IMAGES)},
     )
 
 
@@ -235,6 +301,156 @@ class ImageRecompressConfig(PluginConfigBase):
     animated: AnimatedSectionConfig = Field(default_factory=AnimatedSectionConfig)
     advanced: AdvancedSectionConfig = Field(default_factory=AdvancedSectionConfig)
     performance: PerformanceSectionConfig = Field(default_factory=PerformanceSectionConfig)
+
+
+# --------------------------------------------------------------------------- #
+# 配置解析（空值 = 使用代码内置默认，便于版本升级后自动跟随新默认）
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class EffectiveImageRecompressConfig:
+    """运行时生效的插件配置（已解析占位空值）。"""
+
+    mode: str
+    size_threshold_mb: float
+    min_source_size_kb: float
+    skip_source_formats: tuple[str, ...]
+    skip_if_already_target: bool
+    process_forward: bool
+    out_format: str
+    max_quality: int
+    lossless: bool
+    webp_method: int
+    keep_only_if_smaller: bool
+    max_dimension: int
+    animated_policy: str
+    max_frames: int
+    single_pass_only: bool
+    target_ratio: float
+    quality_floor: int
+    quality_search_iterations: int
+    downscale_iterations: int
+    log_stats: bool
+    verbose: bool
+    max_parallel_images: int
+
+
+def _effective_bool(value: bool | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _effective_str(value: str | None, default: str) -> str:
+    if value is None or not str(value).strip():
+        return default
+    return str(value)
+
+
+def _effective_float(value: float | None, default: float, *, minimum: float = 0.0) -> float:
+    if value is None:
+        return default
+    return max(minimum, float(value))
+
+
+def _effective_int(value: int | None, default: int, *, minimum: int = 0) -> int:
+    if value is None:
+        return default
+    return max(minimum, int(value))
+
+
+def resolve_effective_config(cfg: ImageRecompressConfig) -> EffectiveImageRecompressConfig:
+    return EffectiveImageRecompressConfig(
+        mode=_effective_str(cfg.trigger.mode, DEFAULT_TRIGGER_MODE),
+        size_threshold_mb=_effective_float(cfg.trigger.size_threshold_mb, DEFAULT_SIZE_THRESHOLD_MB),
+        min_source_size_kb=_effective_float(cfg.trigger.min_source_size_kb, DEFAULT_MIN_SOURCE_SIZE_KB),
+        skip_source_formats=tuple(
+            fmt.strip().lower() for fmt in cfg.trigger.skip_source_formats if fmt.strip()
+        ),
+        skip_if_already_target=_effective_bool(
+            cfg.trigger.skip_if_already_target, DEFAULT_SKIP_IF_ALREADY_TARGET
+        ),
+        process_forward=_effective_bool(cfg.trigger.process_forward, DEFAULT_PROCESS_FORWARD),
+        out_format=_effective_str(cfg.output.format, DEFAULT_OUTPUT_FORMAT).lower(),
+        max_quality=_effective_int(cfg.output.max_quality, DEFAULT_MAX_QUALITY, minimum=1),
+        lossless=_effective_bool(cfg.output.lossless, DEFAULT_LOSSLESS),
+        webp_method=_effective_int(cfg.output.webp_method, DEFAULT_WEBP_METHOD),
+        keep_only_if_smaller=_effective_bool(cfg.output.keep_only_if_smaller, DEFAULT_KEEP_ONLY_IF_SMALLER),
+        max_dimension=_effective_int(cfg.output.max_dimension, DEFAULT_MAX_DIMENSION),
+        animated_policy=_effective_str(cfg.animated.policy, DEFAULT_ANIMATED_POLICY),
+        max_frames=_effective_int(cfg.animated.max_frames, DEFAULT_MAX_FRAMES),
+        single_pass_only=_effective_bool(cfg.advanced.single_pass_only, DEFAULT_SINGLE_PASS_ONLY),
+        target_ratio=min(1.0, max(0.1, _effective_float(cfg.advanced.target_ratio, DEFAULT_TARGET_RATIO, minimum=0.1))),
+        quality_floor=_effective_int(cfg.advanced.quality_floor, DEFAULT_QUALITY_FLOOR, minimum=1),
+        quality_search_iterations=_effective_int(
+            cfg.advanced.quality_search_iterations, DEFAULT_QUALITY_SEARCH_ITERATIONS, minimum=1
+        ),
+        downscale_iterations=_effective_int(cfg.advanced.downscale_iterations, DEFAULT_DOWNSCALE_ITERATIONS),
+        log_stats=_effective_bool(cfg.advanced.log_stats, DEFAULT_LOG_STATS),
+        verbose=_effective_bool(cfg.advanced.verbose, DEFAULT_VERBOSE),
+        max_parallel_images=_effective_int(
+            cfg.performance.max_parallel_images, DEFAULT_MAX_PARALLEL_IMAGES, minimum=1
+        ),
+    )
+
+
+_LEGACY_BAKED_DEFAULTS: dict[str, dict[str, bool | float | int | str | list[str]]] = {
+    "trigger": {
+        "mode": DEFAULT_TRIGGER_MODE,
+        "size_threshold_mb": DEFAULT_SIZE_THRESHOLD_MB,
+        "min_source_size_kb": DEFAULT_MIN_SOURCE_SIZE_KB,
+        "skip_if_already_target": DEFAULT_SKIP_IF_ALREADY_TARGET,
+        "process_forward": DEFAULT_PROCESS_FORWARD,
+    },
+    "output": {
+        "format": DEFAULT_OUTPUT_FORMAT,
+        "max_quality": DEFAULT_MAX_QUALITY,
+        "lossless": DEFAULT_LOSSLESS,
+        "webp_method": DEFAULT_WEBP_METHOD,
+        "keep_only_if_smaller": DEFAULT_KEEP_ONLY_IF_SMALLER,
+        "max_dimension": DEFAULT_MAX_DIMENSION,
+    },
+    "animated": {
+        "policy": DEFAULT_ANIMATED_POLICY,
+        "max_frames": DEFAULT_MAX_FRAMES,
+    },
+    "advanced": {
+        "single_pass_only": DEFAULT_SINGLE_PASS_ONLY,
+        "target_ratio": DEFAULT_TARGET_RATIO,
+        "quality_floor": DEFAULT_QUALITY_FLOOR,
+        "quality_search_iterations": DEFAULT_QUALITY_SEARCH_ITERATIONS,
+        "downscale_iterations": DEFAULT_DOWNSCALE_ITERATIONS,
+        "log_stats": DEFAULT_LOG_STATS,
+        "verbose": DEFAULT_VERBOSE,
+    },
+    "performance": {
+        "max_parallel_images": DEFAULT_MAX_PARALLEL_IMAGES,
+    },
+}
+
+
+def _migrate_legacy_baked_defaults(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """将旧版 config.toml 中写死的默认值还原为占位空值，以便跟随代码内置默认。"""
+    changed = False
+    for section_name, fields in _LEGACY_BAKED_DEFAULTS.items():
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for key, legacy_value in fields.items():
+            if key not in section or section[key] != legacy_value:
+                continue
+            if isinstance(legacy_value, str):
+                section[key] = ""
+            else:
+                section[key] = None
+            changed = True
+
+    plugin_section = config.get("plugin")
+    if isinstance(plugin_section, dict):
+        plugin_section["config_version"] = CURRENT_CONFIG_VERSION
+
+    return config, changed
 
 
 # --------------------------------------------------------------------------- #
@@ -599,9 +815,19 @@ class ImageRecompressPlugin(MaiBotPlugin):
         super().__init__()
         # 压缩参数快照，on_load / on_config_update 时重建
         self._settings: RecompressSettings | None = None
-        self._log_stats = True
-        self._verbose = False
-        self._max_parallel_images = 4
+        self._log_stats = DEFAULT_LOG_STATS
+        self._verbose = DEFAULT_VERBOSE
+        self._max_parallel_images = DEFAULT_MAX_PARALLEL_IMAGES
+
+    def normalize_plugin_config(
+        self, config_data: Mapping[str, Any] | None
+    ) -> tuple[dict[str, Any], bool]:
+        normalized, changed = super().normalize_plugin_config(config_data)
+        migrated, migrated_changed = _migrate_legacy_baked_defaults(normalized)
+        return migrated, changed or migrated_changed
+
+    def _effective(self) -> EffectiveImageRecompressConfig:
+        return resolve_effective_config(self.config)
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -648,26 +874,25 @@ class ImageRecompressPlugin(MaiBotPlugin):
     # ------------------------------------------------------------------ #
     def _refresh_settings(self) -> None:
         """从 self.config 重建压缩参数快照与日志开关。"""
-        self._settings = self._build_settings()
-        self._log_stats = self.config.advanced.log_stats
-        self._verbose = self.config.advanced.verbose
-        self._max_parallel_images = max(1, self.config.performance.max_parallel_images)
+        effective = self._effective()
+        self._settings = self._build_settings(effective)
+        self._log_stats = effective.log_stats
+        self._verbose = effective.verbose
+        self._max_parallel_images = effective.max_parallel_images
 
-    def _build_settings(self) -> RecompressSettings:
+    def _build_settings(self, effective: EffectiveImageRecompressConfig) -> RecompressSettings:
         """校验配置枚举字段并消解冲突，生成不可变快照。"""
-        cfg = self.config
-
-        mode = cfg.trigger.mode
+        mode = effective.mode
         if mode not in VALID_MODES:
             self.ctx.logger.warning("无效的触发模式 %r，回退为 always", mode)
             mode = "always"
 
-        out_format = cfg.output.format.lower()
+        out_format = effective.out_format
         if out_format not in PIL_FORMAT_NAMES:
             self.ctx.logger.warning("无效的输出格式 %r，回退为 webp", out_format)
             out_format = "webp"
 
-        animated_policy = cfg.animated.policy
+        animated_policy = effective.animated_policy
         if animated_policy not in VALID_ANIMATED_POLICIES:
             self.ctx.logger.warning("无效的动图策略 %r，回退为 keep_animated", animated_policy)
             animated_policy = "keep_animated"
@@ -677,29 +902,29 @@ class ImageRecompressPlugin(MaiBotPlugin):
             animated_policy = "skip"
 
         # 阈值统一换算为字节；估算目标 = 阈值 × 比例，仅单次估算模式使用
-        size_threshold = int(max(0.0, cfg.trigger.size_threshold_mb) * 1024 * 1024)
-        target_ratio = min(1.0, max(0.1, cfg.advanced.target_ratio))
+        size_threshold = int(max(0.0, effective.size_threshold_mb) * 1024 * 1024)
+        target_ratio = min(1.0, max(0.1, effective.target_ratio))
 
         return RecompressSettings(
             mode=mode,
             size_threshold=size_threshold,
-            min_source_size=int(max(0.0, cfg.trigger.min_source_size_kb) * 1024),
-            skip_source_formats=tuple(fmt.strip().lower() for fmt in cfg.trigger.skip_source_formats if fmt.strip()),
-            skip_if_already_target=cfg.trigger.skip_if_already_target,
-            process_forward=cfg.trigger.process_forward,
+            min_source_size=int(max(0.0, effective.min_source_size_kb) * 1024),
+            skip_source_formats=effective.skip_source_formats,
+            skip_if_already_target=effective.skip_if_already_target,
+            process_forward=effective.process_forward,
             out_format=out_format,
-            max_quality=min(100, max(1, cfg.output.max_quality)),
-            lossless=cfg.output.lossless,
-            webp_method=min(6, max(0, cfg.output.webp_method)),
-            keep_only_if_smaller=cfg.output.keep_only_if_smaller,
-            max_dimension=max(0, cfg.output.max_dimension),
+            max_quality=min(100, max(1, effective.max_quality)),
+            lossless=effective.lossless,
+            webp_method=min(6, max(0, effective.webp_method)),
+            keep_only_if_smaller=effective.keep_only_if_smaller,
+            max_dimension=max(0, effective.max_dimension),
             animated_policy=animated_policy,
-            max_frames=max(0, cfg.animated.max_frames),
-            single_pass_only=cfg.advanced.single_pass_only,
+            max_frames=max(0, effective.max_frames),
+            single_pass_only=effective.single_pass_only,
             estimation_target=int(size_threshold * target_ratio),
-            quality_floor=min(100, max(1, cfg.advanced.quality_floor)),
-            quality_search_iterations=max(1, cfg.advanced.quality_search_iterations),
-            downscale_iterations=max(0, cfg.advanced.downscale_iterations),
+            quality_floor=min(100, max(1, effective.quality_floor)),
+            quality_search_iterations=max(1, effective.quality_search_iterations),
+            downscale_iterations=max(0, effective.downscale_iterations),
         )
 
     # ------------------------------------------------------------------ #
