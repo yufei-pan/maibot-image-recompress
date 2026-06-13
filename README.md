@@ -76,10 +76,10 @@
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `policy` | `"animated_webp"` | `animated_webp`=转动态 WebP（保留动画）；`skip`=原样放行；`first_frame`=只留首帧 |
+| `policy` | `"keep_animated"` | `keep_animated`=保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；`skip`=原样放行；`first_frame`=只留首帧 |
 | `max_frames` | `512` | 帧数超过上限的动图跳过，防止编码耗时过久；`0` 不限制 |
 
-注意：输出格式不是 webp 时（jpeg/png 无法承载动画），`animated_webp` 在运行时退化为 `skip`，加载时会告警一次。
+注意：jpeg 无法承载动画，输出 jpeg 时 `keep_animated` 在运行时退化为 `skip`，加载时会告警一次（webp / png 可保留动画）。
 
 ### [advanced] 高级
 

@@ -51,9 +51,9 @@ keep_only_if_smaller = true
 max_dimension = 4096
 
 [animated]
-# 动图处理策略：animated_webp = 整体转动态 WebP；skip = 原样放行；first_frame = 只保留首帧
-# 输出格式不是 webp 时 animated_webp 自动退化为 skip
-policy = "animated_webp"
+# 动图处理策略：keep_animated = 保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；
+# skip = 原样放行；first_frame = 只保留首帧。输出格式为 jpeg 时 keep_animated 自动退化为 skip
+policy = "keep_animated"
 # 动图帧数上限，超过则跳过该图（防止超长 GIF 编码耗时过久）；0 表示不限制
 max_frames = 512
 

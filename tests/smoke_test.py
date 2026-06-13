@@ -35,7 +35,7 @@ def _make_settings(**overrides) -> recompress_plugin.RecompressSettings:
         webp_method=4,
         keep_only_if_smaller=True,
         max_dimension=4096,
-        animated_policy="animated_webp",
+        animated_policy="keep_animated",
         max_frames=512,
         single_pass_only=True,
         estimation_target=int(1024 * 1024 * 0.9),
@@ -84,6 +84,23 @@ def _make_gif_bytes(frame_count: int, size: tuple[int, int] = (64, 64), duration
     return buffer.getvalue()
 
 
+def _make_apng_bytes(frame_count: int, size: tuple[int, int] = (64, 64), duration: int = 80) -> bytes:
+    """生成多帧 APNG（动态 PNG）测试字节。"""
+    frames = [
+        Image.new("RGBA", size, ((index * 40) % 256, 80, 160, 255)) for index in range(frame_count)
+    ]
+    buffer = BytesIO()
+    frames[0].save(
+        buffer,
+        format="PNG",
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration,
+        loop=0,
+    )
+    return buffer.getvalue()
+
+
 def _is_webp(data: bytes) -> bool:
     return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
 
@@ -99,7 +116,7 @@ def test_plugin_importable() -> None:
     assert default_config["output"]["format"] == "webp"
     assert default_config["output"]["max_quality"] == 80
     assert "quality" not in default_config["output"]
-    assert default_config["animated"]["policy"] == "animated_webp"
+    assert default_config["animated"]["policy"] == "keep_animated"
     assert default_config["animated"]["max_frames"] == 512
     assert default_config["output"]["max_dimension"] == 4096
     assert default_config["advanced"]["quality_floor"] == 10
@@ -186,6 +203,57 @@ def test_animated_gif_to_animated_webp() -> None:
             durations.append(int(image.info.get("duration", 0)))
         assert all(60 <= value <= 120 for value in durations), f"帧时长偏差过大：{durations}"
     print(f"ok: 5-frame gif -> animated webp (durations={durations})")
+
+
+def test_animated_gif_to_apng() -> None:
+    # png 输出 + keep_animated：转 APNG，保留多帧
+    data = _make_gif_bytes(5, duration=80)
+    result = recompress_plugin._recompress_blocking(
+        data, _make_settings(out_format="png", keep_only_if_smaller=False)
+    )
+    assert result.new_bytes is not None, result.skipped_reason
+    assert result.was_animated
+    with Image.open(BytesIO(result.new_bytes)) as image:
+        assert image.format == "PNG"
+        assert getattr(image, "is_animated", False)
+        assert image.n_frames == 5
+    print("ok: 5-frame gif -> apng")
+
+
+def test_apng_input_stays_animated() -> None:
+    # 回归：APNG 输入不能被压成静态图，应保留动画
+    data = _make_apng_bytes(5, duration=80)
+    # 转 webp 输出
+    webp = recompress_plugin._recompress_blocking(
+        data, _make_settings(out_format="webp", keep_only_if_smaller=False)
+    )
+    assert webp.new_bytes is not None, webp.skipped_reason
+    assert webp.was_animated, "APNG 输入未被识别为动画"
+    with Image.open(BytesIO(webp.new_bytes)) as image:
+        assert image.format == "WEBP"
+        assert getattr(image, "is_animated", False), "APNG -> webp 被压成了静态图"
+        assert image.n_frames == 5
+    # 转 png 输出（APNG -> APNG，需关闭 skip_if_already_target 以强制重编码）
+    png = recompress_plugin._recompress_blocking(
+        data, _make_settings(out_format="png", skip_if_already_target=False, keep_only_if_smaller=False)
+    )
+    assert png.new_bytes is not None, png.skipped_reason
+    with Image.open(BytesIO(png.new_bytes)) as image:
+        assert image.format == "PNG"
+        assert getattr(image, "is_animated", False), "APNG -> png 被压成了静态图"
+        assert image.n_frames == 5
+    print("ok: apng input stays animated (webp & png)")
+
+
+def test_animated_jpeg_degrades_to_skip() -> None:
+    # jpeg 无法承载动画：keep_animated 退化为 skip（_build_settings 已处理，这里直接传 skip 验证编码侧）
+    data = _make_gif_bytes(5)
+    result = recompress_plugin._recompress_blocking(
+        data, _make_settings(out_format="jpeg", animated_policy="skip")
+    )
+    assert result.new_bytes is None
+    assert "动图按配置跳过" in result.skipped_reason
+    print("ok: jpeg animated -> skip")
 
 
 def test_animated_first_frame() -> None:
@@ -344,6 +412,9 @@ def main() -> None:
     test_skip_if_already_target()
     test_skip_source_formats()
     test_animated_gif_to_animated_webp()
+    test_animated_gif_to_apng()
+    test_apng_input_stays_animated()
+    test_animated_jpeg_degrades_to_skip()
     test_animated_first_frame()
     test_animated_skip()
     test_max_frames_cap()

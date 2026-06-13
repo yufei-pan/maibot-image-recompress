@@ -37,8 +37,10 @@ from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 VALID_MODES = ("always", "oversized_only")
 # 输出格式与 Pillow 格式名的映射
 PIL_FORMAT_NAMES = {"webp": "WEBP", "jpeg": "JPEG", "png": "PNG"}
-# 动图策略：animated_webp=整体转动态 WebP；skip=不处理；first_frame=只保留首帧
-VALID_ANIMATED_POLICIES = ("animated_webp", "skip", "first_frame")
+# 动图策略：keep_animated=保留动画按输出格式编码；skip=不处理；first_frame=只保留首帧
+VALID_ANIMATED_POLICIES = ("keep_animated", "skip", "first_frame")
+# 能承载动画的输出格式：webp→动态 WebP，png→APNG；jpeg 不支持
+ANIMATED_CAPABLE_FORMATS = ("webp", "png")
 
 # 动图帧缺省时长（毫秒），与 Pillow 对 GIF 的常见缺省值一致
 DEFAULT_FRAME_DURATION_MS = 100
@@ -154,11 +156,11 @@ class AnimatedSectionConfig(PluginConfigBase):
     __ui_order__ = 3
 
     policy: str = Field(
-        default="animated_webp",
+        default="keep_animated",
         description=(
-            "动图处理策略：animated_webp=整体转动态 WebP（保留动画）；"
+            "动图处理策略：keep_animated=保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；"
             "skip=动图原样放行；first_frame=只保留首帧转静态图。"
-            "输出格式不是 webp 时 animated_webp 自动退化为 skip。"
+            "输出格式为 jpeg（无法承载动画）时 keep_animated 自动退化为 skip。"
         ),
     )
     max_frames: int = Field(
@@ -462,8 +464,11 @@ def _compress_to_target(image: Image.Image, settings: RecompressSettings) -> byt
     return encoded
 
 
-def _encode_animated_webp(image: Image.Image, settings: RecompressSettings) -> bytes:
-    """把多帧图片整体转为动态 WebP，保留每帧时长与循环次数。"""
+def _encode_animated(image: Image.Image, settings: RecompressSettings) -> bytes:
+    """把多帧图片整体转为动画，保留每帧时长与循环次数。
+
+    webp 输出为动态 WebP，png 输出为 APNG；两者均保留逐帧时长与 loop。
+    """
     frames: list[Image.Image] = []
     durations: list[int] = []
     for frame in ImageSequence.Iterator(image):
@@ -471,20 +476,34 @@ def _encode_animated_webp(image: Image.Image, settings: RecompressSettings) -> b
         durations.append(int(frame.info.get("duration", DEFAULT_FRAME_DURATION_MS)) or DEFAULT_FRAME_DURATION_MS)
 
     buffer = BytesIO()
-    if settings.lossless:
-        # 无损模式固定使用最高压缩率参数
-        encode_kwargs = {"lossless": True, "quality": 100, "method": 6}
+    loop = int(image.info.get("loop", 0))
+    if settings.out_format == "webp":
+        if settings.lossless:
+            # 无损模式固定使用最高压缩率参数
+            encode_kwargs = {"lossless": True, "quality": 100, "method": 6}
+        else:
+            encode_kwargs = {"quality": settings.max_quality, "method": settings.webp_method}
+        frames[0].save(
+            buffer,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=loop,
+            **encode_kwargs,
+        )
     else:
-        encode_kwargs = {"quality": settings.max_quality, "method": settings.webp_method}
-    frames[0].save(
-        buffer,
-        format="WEBP",
-        save_all=True,
-        append_images=frames[1:],
-        duration=durations,
-        loop=int(image.info.get("loop", 0)),
-        **encode_kwargs,
-    )
+        # APNG：PNG 无损，固定最高压缩率
+        frames[0].save(
+            buffer,
+            format="PNG",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=loop,
+            optimize=True,
+            compress_level=9,
+        )
     return buffer.getvalue()
 
 
@@ -513,7 +532,7 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
             if is_animated:
                 if settings.animated_policy == "skip":
                     return RecompressResult(None, "动图按配置跳过", src_format, True, orig_size=orig_size)
-                if settings.animated_policy == "animated_webp":
+                if settings.animated_policy == "keep_animated":
                     frame_count = getattr(image, "n_frames", 1)
                     # max_frames 为 0 表示不限制帧数
                     if settings.max_frames > 0 and frame_count > settings.max_frames:
@@ -524,7 +543,7 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
                             True,
                             orig_size=orig_size,
                         )
-                    new_bytes = _encode_animated_webp(image, settings)
+                    new_bytes = _encode_animated(image, settings)
                 else:
                     # first_frame：取首帧按静态图处理
                     image.seek(0)
@@ -650,11 +669,11 @@ class ImageRecompressPlugin(MaiBotPlugin):
 
         animated_policy = cfg.animated.policy
         if animated_policy not in VALID_ANIMATED_POLICIES:
-            self.ctx.logger.warning("无效的动图策略 %r，回退为 animated_webp", animated_policy)
-            animated_policy = "animated_webp"
-        # jpeg / png 无法承载动画，animated_webp 退化为 skip
-        if animated_policy == "animated_webp" and out_format != "webp":
-            self.ctx.logger.warning("输出格式 %s 无法承载动画，动图策略 animated_webp 退化为 skip", out_format)
+            self.ctx.logger.warning("无效的动图策略 %r，回退为 keep_animated", animated_policy)
+            animated_policy = "keep_animated"
+        # jpeg 无法承载动画，keep_animated 退化为 skip（webp / png 可保留动画）
+        if animated_policy == "keep_animated" and out_format not in ANIMATED_CAPABLE_FORMATS:
+            self.ctx.logger.warning("输出格式 %s 无法承载动画，动图策略 keep_animated 退化为 skip", out_format)
             animated_policy = "skip"
 
         # 阈值统一换算为字节；估算目标 = 阈值 × 比例，仅单次估算模式使用
