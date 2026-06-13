@@ -1,4 +1,4 @@
-# Image Recompress 插件配置
+# 智能入站图片重压缩 插件配置
 # 各字段含义详见 README.md；默认值与插件配置模型保持一致。
 #
 # ⚠️ 使用前必读：务必在 bot_config.toml 或者webui关闭主程序默认的「处理过大图片」：
@@ -48,7 +48,7 @@ webp_method = 4
 # 仅当压缩结果比原图更小时才替换，否则保留原图
 keep_only_if_smaller = true
 # 静态图最长边像素上限，超过先等比预缩放再编码；0 表示不限制（动图不受此限制）
-max_dimension = 2048
+max_dimension = 4096
 
 [animated]
 # 动图处理策略：animated_webp = 整体转动态 WebP；skip = 原样放行；first_frame = 只保留首帧

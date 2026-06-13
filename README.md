@@ -1,4 +1,4 @@
-# 麦麦图片重压缩插件（maibot-image-recompress）
+# 智能入站图片重压缩（maibot-image-recompress）
 
 把入站消息中的图片重压缩为更高效的 **WebP**（也可配置 JPEG / PNG），替代主程序内置的 JPEG 压缩。支持动图转动态 WebP、仅压缩超大图、压到目标大小等多种模式。
 
@@ -39,7 +39,7 @@
 1. **先在** `bot_config.toml` **关闭** `visual.handle_oversized_images`（见文首警告）；
 2. 将本仓库放入（或软链到）MaiBot 的 `plugins/` 目录；
 3. 依赖 `pillow>=10.0.0` 由 Host 依赖解析器自动安装；
-4. 重启 MaiBot，日志中出现 `图片重压缩插件已加载` 即成功。
+4. 重启 MaiBot，日志中出现 `智能入站图片重压缩已加载` 即成功。
 
 ## 配置说明
 
@@ -70,7 +70,7 @@
 | `lossless` | `false` | WebP 无损模式：固定用最高压缩率参数（quality=100 + method=6）编码，超阈值时只能缩像素尺寸 |
 | `webp_method` | `4` | WebP 有损编码 method（0-6），越大越慢压缩率越高；无损固定用 6 |
 | `keep_only_if_smaller` | `true` | 压缩结果不比原图小则保留原图 |
-| `max_dimension` | `2048` | 静态图最长边像素上限，超过先等比预缩放；`0` 不限制（动图不受此限制） |
+| `max_dimension` | `4096` | 静态图最长边像素上限，超过先等比预缩放；`0` 不限制（动图不受此限制） |
 
 ### [animated] 动图
 

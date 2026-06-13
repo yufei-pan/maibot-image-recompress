@@ -34,7 +34,7 @@ def _make_settings(**overrides) -> recompress_plugin.RecompressSettings:
         lossless=False,
         webp_method=4,
         keep_only_if_smaller=True,
-        max_dimension=2048,
+        max_dimension=4096,
         animated_policy="animated_webp",
         max_frames=512,
         single_pass_only=True,
@@ -101,7 +101,7 @@ def test_plugin_importable() -> None:
     assert "quality" not in default_config["output"]
     assert default_config["animated"]["policy"] == "animated_webp"
     assert default_config["animated"]["max_frames"] == 512
-    assert default_config["output"]["max_dimension"] == 2048
+    assert default_config["output"]["max_dimension"] == 4096
     assert default_config["advanced"]["quality_floor"] == 10
     assert default_config["advanced"]["single_pass_only"] is True
     assert default_config["advanced"]["target_ratio"] == 0.9

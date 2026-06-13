@@ -1,4 +1,4 @@
-"""Image Recompress 插件。
+"""智能入站图片重压缩插件。
 
 在 ``chat.receive.before_process`` Hook 中，把入站消息里的图片组件重压缩为
 更高效的目标格式（默认 WebP），用于替代主程序内置的 JPEG 压缩。
@@ -138,7 +138,7 @@ class OutputSectionConfig(PluginConfigBase):
         description="仅当压缩结果比原图更小时才替换，否则保留原图。",
     )
     max_dimension: int = Field(
-        default=2048,
+        default=4096,
         description=(
             "静态图最长边像素上限，超过先等比预缩放再编码（避免在超大图上浪费压缩计算）；"
             "0 表示不限制。动图不受此限制。"
@@ -572,7 +572,7 @@ def _encode_static_pipeline(image: Image.Image, settings: RecompressSettings, or
 
 
 class ImageRecompressPlugin(MaiBotPlugin):
-    """入站图片重压缩插件主体。"""
+    """智能入站图片重压缩插件主体。"""
 
     config_model = ImageRecompressConfig
 
@@ -604,7 +604,7 @@ class ImageRecompressPlugin(MaiBotPlugin):
         settings = self._settings
         if settings is not None:
             self.ctx.logger.info(
-                "图片重压缩插件已加载：模式=%s, 输出=%s, 最高质量=%d, 无损=%s, 动图=%s, 并行=%d",
+                "智能入站图片重压缩已加载：模式=%s, 输出=%s, 最高质量=%d, 无损=%s, 动图=%s, 并行=%d",
                 settings.mode,
                 settings.out_format,
                 settings.max_quality,
@@ -615,14 +615,14 @@ class ImageRecompressPlugin(MaiBotPlugin):
 
     async def on_unload(self) -> None:
         """插件卸载。"""
-        self.ctx.logger.info("图片重压缩插件已卸载")
+        self.ctx.logger.info("智能入站图片重压缩已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
         """配置热更新：重建参数快照。"""
         del config_data
         if scope == CONFIG_RELOAD_SCOPE_SELF:
             self._refresh_settings()
-            self.ctx.logger.info("图片重压缩插件配置已更新: version=%s", version)
+            self.ctx.logger.info("智能入站图片重压缩配置已更新: version=%s", version)
 
     # ------------------------------------------------------------------ #
     # 配置快照
