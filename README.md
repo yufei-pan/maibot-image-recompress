@@ -96,7 +96,7 @@
 **大小目标压缩**只在原图超过 `size_threshold_mb` 时介入，两种模式：
 
 - **单次编码（默认，`single_pass_only = true`）**：把图片等比缩到 ≤ 64k 像素做一次试编码，按像素数外推全尺寸体积，再用 `q × sqrt(目标/估算体积)` 反解所需质量，全尺寸只编码一次。估算目标取 `size_threshold_mb × target_ratio`（默认 90%），预留上下浮动空间；试编码成本仅为全尺寸压缩的几个百分点。质量压到 `quality_floor` 仍不够时，按同一模型附加一个等比缩放，仍保持单次编码。
-- **循环逼近（`single_pass_only = false`，与 fetch-url 算法一致）**：直接以 `size_threshold_mb` 为目标（不乘 `target_ratio`），自适应质量搜索（按 `q × sqrt(目标/实际)` 跳跃，最多 `quality_search_iterations` 轮）；质量到底仍超标再按 `sqrt(目标/实际)` 比例循环缩小尺寸（最多 `downscale_iterations` 轮，最小边长 16 像素）。结果严格不超目标（轮数耗尽除外），但要多次全尺寸编码。
+- **循环逼近（`single_pass_only = false`）**：直接以 `size_threshold_mb` 为目标（不乘 `target_ratio`），自适应质量搜索（按 `q × sqrt(目标/实际)` 跳跃，最多 `quality_search_iterations` 轮）；质量到底仍超标再按 `sqrt(目标/实际)` 比例循环缩小尺寸（最多 `downscale_iterations` 轮，最小边长 16 像素）。结果严格不超目标（轮数耗尽除外），但要多次全尺寸编码。
 
 无损 WebP 与 PNG 输出没有质量可调（固定最高压缩率参数），超过阈值时两种模式都**只能缩小图片像素尺寸**来满足目标。大小目标压缩仅对静态图生效。
 
