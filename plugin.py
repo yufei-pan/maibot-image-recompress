@@ -505,6 +505,10 @@ class RecompressResult:
     orig_size: int = 0
     new_size: int = 0
     elapsed_ms: float = 0.0
+    # 转换后的图片尺寸与实际使用的编码质量（无损/png 为 None）
+    final_width: int = 0
+    final_height: int = 0
+    final_quality: int | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -745,6 +749,9 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
 
             is_animated = bool(getattr(image, "is_animated", False)) and getattr(image, "n_frames", 1) > 1
 
+            final_quality: int | None = None
+            final_width: int = 0
+            final_height: int = 0
             if is_animated:
                 if settings.animated_policy == "skip":
                     return RecompressResult(None, "动图按配置跳过", src_format, True, orig_size=orig_size)
@@ -760,12 +767,20 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
                             orig_size=orig_size,
                         )
                     new_bytes = _encode_animated(image, settings)
+                    # 从第一帧读取尺寸
+                    image.seek(0)
+                    final_width, final_height = image.size
+                    final_quality = settings.max_quality if _quality_adjustable(settings) else None
                 else:
                     # first_frame：取首帧按静态图处理
                     image.seek(0)
-                    new_bytes = _encode_static_pipeline(image, settings, orig_size)
+                    new_bytes, final_quality, final_width, final_height = _encode_static_pipeline(
+                        image, settings, orig_size
+                    )
             else:
-                new_bytes = _encode_static_pipeline(image, settings, orig_size)
+                new_bytes, final_quality, final_width, final_height = _encode_static_pipeline(
+                    image, settings, orig_size
+                )
     except Exception as exc:
         return RecompressResult(None, f"压缩失败: {exc}", orig_size=orig_size)
 
@@ -777,28 +792,44 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
         orig_size=orig_size,
         new_size=len(new_bytes),
         elapsed_ms=elapsed_ms,
+        final_width=final_width,
+        final_height=final_height,
+        final_quality=final_quality,
     )
 
 
-def _encode_static_pipeline(image: Image.Image, settings: RecompressSettings, orig_size: int) -> bytes:
-    """静态图编码管线：模式整理 → 超大图预缩放 → 质量估算单次编码或循环逼近。"""
+def _encode_static_pipeline(
+    image: Image.Image, settings: RecompressSettings, orig_size: int
+) -> tuple[bytes, int | None, int, int]:
+    """静态图编码管线：模式整理 → 超大图预缩放 → 质量估算单次编码或循环逼近。
+
+    Returns:
+        (encoded_bytes, quality_used, final_width, final_height)
+        quality_used 为 None 表示无损/png（质量参数无意义）。
+    """
     prepared = _prepare_static_frame(image, settings.out_format)
     # 预缩放：超大图先压到 max_dimension，避免在高质量大图上浪费压缩计算
     if settings.max_dimension > 0 and max(prepared.size) > settings.max_dimension:
         prepared = _resize_keep_aspect(prepared, settings.max_dimension / max(prepared.size))
 
+    quality_adjustable = _quality_adjustable(settings)
+
     # 原图未超过阈值时单次最高质量转码即可
     if settings.size_threshold <= 0 or orig_size <= settings.size_threshold:
-        return _encode_static(prepared, settings, settings.max_quality)
+        encoded = _encode_static(prepared, settings, settings.max_quality)
+        quality = settings.max_quality if quality_adjustable else None
+        return encoded, quality, prepared.width, prepared.height
 
     if settings.single_pass_only:
         # 估算质量（无损 / png 则估算缩放比例）后全尺寸单次编码
         quality, scale = _estimate_quality_and_scale(prepared, settings)
         if scale < 1.0:
             prepared = _resize_keep_aspect(prepared, scale)
-        return _encode_static(prepared, settings, quality)
+        encoded = _encode_static(prepared, settings, quality)
+        return encoded, quality if quality_adjustable else None, prepared.width, prepared.height
 
-    return _compress_to_target(prepared, settings)
+    encoded = _compress_to_target(prepared, settings)
+    return encoded, None, prepared.width, prepared.height
 
 
 # --------------------------------------------------------------------------- #
@@ -1002,9 +1033,16 @@ class ImageRecompressPlugin(MaiBotPlugin):
             changed_count += 1
             original_total += len(image_bytes)
             compressed_total += len(result.new_bytes)
+            quality_str = f", 质量={result.final_quality}" if result.final_quality is not None else ""
+            dim_str = (
+                f", 尺寸={result.final_width}x{result.final_height}"
+                if result.final_width and result.final_height
+                else ""
+            )
             self._log_verbose(
                 f"已压缩({result.src_format}{'动图' if result.was_animated else ''} -> {settings.out_format}): "
-                f"{result.orig_size / 1024:.1f}KB -> {result.new_size / 1024:.1f}KB, 耗时 {result.elapsed_ms:.0f}ms"
+                f"{result.orig_size / 1024:.1f}KB -> {result.new_size / 1024:.1f}KB"
+                f"{quality_str}{dim_str}, 耗时 {result.elapsed_ms:.0f}ms"
             )
 
         if changed_count:
