@@ -78,6 +78,11 @@ DEFAULT_FRAME_DURATION_MS = 100
 # 试编码成本仅为全尺寸压缩的几个百分点）
 PROBE_MAX_PIXELS = 65536
 
+# WebP 编码器对单边像素数的硬上限（超过会直接编码失败）。
+# 无论 max_dimension 如何配置，输出 webp 时都必须先缩到此限制内，
+# 否则超宽 / 超高图（尤其是不受 max_dimension 约束的动图）会编码失败被静默跳过。
+WEBP_MAX_DIMENSION = 16383
+
 
 # --------------------------------------------------------------------------- #
 # 配置模型
@@ -684,15 +689,28 @@ def _compress_to_target(image: Image.Image, settings: RecompressSettings) -> byt
     return encoded
 
 
-def _encode_animated(image: Image.Image, settings: RecompressSettings) -> bytes:
+def _encode_animated(image: Image.Image, settings: RecompressSettings) -> tuple[bytes, int, int]:
     """把多帧图片整体转为动画，保留每帧时长与循环次数。
 
     webp 输出为动态 WebP，png 输出为 APNG；两者均保留逐帧时长与 loop。
+
+    Returns:
+        (encoded_bytes, final_width, final_height)
     """
+    # 动图不受 max_dimension 约束，但输出 webp 时仍受 WEBP_MAX_DIMENSION 硬限制，
+    # 超过则整体等比缩小（所有帧用同一目标尺寸，避免逐帧四舍五入产生不一致）。
+    target_size: tuple[int, int] | None = None
+    if settings.out_format == "webp" and max(image.size) > WEBP_MAX_DIMENSION:
+        scale = WEBP_MAX_DIMENSION / max(image.size)
+        target_size = (max(16, round(image.width * scale)), max(16, round(image.height * scale)))
+
     frames: list[Image.Image] = []
     durations: list[int] = []
     for frame in ImageSequence.Iterator(image):
-        frames.append(frame.convert("RGBA"))
+        rgba = frame.convert("RGBA")
+        if target_size is not None:
+            rgba = rgba.resize(target_size, Image.Resampling.LANCZOS)
+        frames.append(rgba)
         durations.append(int(frame.info.get("duration", DEFAULT_FRAME_DURATION_MS)) or DEFAULT_FRAME_DURATION_MS)
 
     buffer = BytesIO()
@@ -724,7 +742,7 @@ def _encode_animated(image: Image.Image, settings: RecompressSettings) -> bytes:
             optimize=True,
             compress_level=9,
         )
-    return buffer.getvalue()
+    return buffer.getvalue(), frames[0].width, frames[0].height
 
 
 def _recompress_blocking(data: bytes, settings: RecompressSettings) -> RecompressResult:
@@ -766,10 +784,7 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
                             True,
                             orig_size=orig_size,
                         )
-                    new_bytes = _encode_animated(image, settings)
-                    # 从第一帧读取尺寸
-                    image.seek(0)
-                    final_width, final_height = image.size
+                    new_bytes, final_width, final_height = _encode_animated(image, settings)
                     final_quality = settings.max_quality if _quality_adjustable(settings) else None
                 else:
                     # first_frame：取首帧按静态图处理
@@ -808,9 +823,14 @@ def _encode_static_pipeline(
         quality_used 为 None 表示无损/png（质量参数无意义）。
     """
     prepared = _prepare_static_frame(image, settings.out_format)
-    # 预缩放：超大图先压到 max_dimension，避免在高质量大图上浪费压缩计算
-    if settings.max_dimension > 0 and max(prepared.size) > settings.max_dimension:
-        prepared = _resize_keep_aspect(prepared, settings.max_dimension / max(prepared.size))
+    # 预缩放：超大图先压到 max_dimension，避免在高质量大图上浪费压缩计算。
+    # 输出 webp 时无论如何都要再受 WEBP_MAX_DIMENSION 约束（含 max_dimension=0 / 大于该限制的情况），
+    # 否则超过 16383 像素的边会编码失败。
+    dim_cap = settings.max_dimension
+    if settings.out_format == "webp":
+        dim_cap = WEBP_MAX_DIMENSION if dim_cap <= 0 else min(dim_cap, WEBP_MAX_DIMENSION)
+    if dim_cap > 0 and max(prepared.size) > dim_cap:
+        prepared = _resize_keep_aspect(prepared, dim_cap / max(prepared.size))
 
     quality_adjustable = _quality_adjustable(settings)
 

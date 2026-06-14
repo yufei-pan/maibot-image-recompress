@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "com.0-hz.image-recompress",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "name": "智能入站图片重压缩",
   "description": "在入站消息进入处理流程前，把图片组件重压缩为更高效的 WebP（可配置 JPEG/PNG）。支持动图转动态 WebP、仅压缩超大图、目标大小循环压缩等模式，用于替代主程序内置的 JPEG 压缩（需关闭 visual.handle_oversized_images）。",
   "author": {
