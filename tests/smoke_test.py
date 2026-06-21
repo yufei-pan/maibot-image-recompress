@@ -33,8 +33,8 @@ def _make_settings(**overrides) -> recompress_plugin.RecompressSettings:
         max_quality=80,
         lossless=False,
         webp_method=4,
-        keep_only_if_smaller=True,
-        max_dimension=4096,
+        keep_only_if_smaller=False,
+        max_dimension=2000,
         animated_policy="keep_animated",
         max_frames=512,
         single_pass_only=True,
@@ -292,6 +292,47 @@ def test_max_frames_unlimited() -> None:
     print("ok: max_frames=0 unlimited")
 
 
+def test_mpo_mixed_resolution_keep_largest_frame() -> None:
+    full = Image.new("RGB", (4096, 3072), (100, 100, 100))
+    thumb = Image.new("RGB", (512, 384), (200, 200, 200))
+    buffer = BytesIO()
+    full.save(buffer, format="MPO", save_all=True, append_images=[thumb], quality=95)
+    data = buffer.getvalue()
+
+    result = recompress_plugin._recompress_blocking(data, _make_settings())
+    assert result.new_bytes is not None, result.skipped_reason
+    assert result.was_animated
+    with Image.open(BytesIO(result.new_bytes)) as image:
+        assert image.format == "WEBP"
+        assert max(image.size) <= 2000
+    print("ok: mixed-resolution MPO keep_animated -> largest frame webp")
+
+
+def test_filter_largest_frame_entries() -> None:
+    large = Image.new("RGB", (100, 80))
+    small = Image.new("RGB", (40, 30))
+    entries = [(large, 100), (small, 100), (Image.new("RGB", (100, 80)), 50)]
+    filtered = recompress_plugin._filter_largest_frame_entries(entries)
+    assert len(filtered) == 2
+    assert all(frame.size == (100, 80) for frame, _ in filtered)
+    print("ok: filter_largest_frame_entries keeps largest-area frames")
+
+
+def test_keep_animated_fallback_first_frame() -> None:
+    from unittest.mock import patch
+
+    data = _make_gif_bytes(5)
+    with patch.object(recompress_plugin, "_encode_animated", side_effect=RuntimeError("forced animated failure")):
+        result = recompress_plugin._recompress_blocking(
+            data, _make_settings(animated_policy="keep_animated")
+        )
+    assert result.new_bytes is not None, result.skipped_reason
+    with Image.open(BytesIO(result.new_bytes)) as image:
+        assert image.format == "WEBP"
+        assert not getattr(image, "is_animated", False)
+    print("ok: keep_animated failure falls back to first_frame")
+
+
 def test_max_dimension_predownscale() -> None:
     data = _make_image_bytes("png", (300, 100))
     result = recompress_plugin._recompress_blocking(
@@ -417,6 +458,9 @@ def main() -> None:
     test_animated_skip()
     test_max_frames_cap()
     test_max_frames_unlimited()
+    test_mpo_mixed_resolution_keep_largest_frame()
+    test_filter_largest_frame_entries()
+    test_keep_animated_fallback_first_frame()
     test_max_dimension_predownscale()
     test_corrupt_bytes()
     test_iter_image_components_forward()

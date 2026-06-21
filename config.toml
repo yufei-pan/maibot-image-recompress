@@ -18,7 +18,7 @@
 # 是否启用插件
 enabled = true
 # 配置版本
-config_version = "1.2.0"
+config_version = "1.3.0"
 
 [trigger]
 # 触发模式：always = 所有入站图片都重压缩；oversized_only = 仅压缩超过 size_threshold 的图片
@@ -47,13 +47,14 @@ skip_source_formats = []
 # lossless = false
 # WebP 有损编码 method（0-6）：越大压缩率越高但越慢；动图较多时建议不超过 4；无损模式固定用 6
 # webp_method = 4
-# 仅当压缩结果比原图更小时才替换，否则保留原图
-# keep_only_if_smaller = true
-# 静态图最长边像素上限，超过先等比预缩放再编码；0 表示不限制（动图不受此限制）
-# max_dimension = 4096
+# 仅当压缩结果比原图更小时才替换，否则仍写入新格式
+# keep_only_if_smaller = false
+# 图片最长边像素上限，超过先等比预缩放再编码；0 表示不限制（静态图与动图均适用）
+# max_dimension = 2000
 
 [animated]
 # 动图处理策略：keep_animated = 保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；
+# 多帧尺寸不一致时仅保留最大尺寸的帧；编码失败时自动降级为首帧静态图，仍失败则原样放行；
 # skip = 原样放行；first_frame = 只保留首帧。输出格式为 jpeg 时 keep_animated 自动退化为 skip
 # policy = "keep_animated"
 # 动图帧数上限，超过则跳过该图（防止超长 GIF 编码耗时过久）；0 表示不限制

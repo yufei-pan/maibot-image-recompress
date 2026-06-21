@@ -43,7 +43,7 @@ VALID_ANIMATED_POLICIES = ("keep_animated", "skip", "first_frame")
 # 能承载动画的输出格式：webp→动态 WebP，png→APNG；jpeg 不支持
 ANIMATED_CAPABLE_FORMATS = ("webp", "png")
 
-CURRENT_CONFIG_VERSION = "1.2.0"
+CURRENT_CONFIG_VERSION = "1.3.0"
 
 DEFAULT_TRIGGER_MODE = "always"
 DEFAULT_SIZE_THRESHOLD_MB = 1.0
@@ -55,8 +55,8 @@ DEFAULT_OUTPUT_FORMAT = "webp"
 DEFAULT_MAX_QUALITY = 80
 DEFAULT_LOSSLESS = False
 DEFAULT_WEBP_METHOD = 4
-DEFAULT_KEEP_ONLY_IF_SMALLER = True
-DEFAULT_MAX_DIMENSION = 4096
+DEFAULT_KEEP_ONLY_IF_SMALLER = False
+DEFAULT_MAX_DIMENSION = 2000
 
 DEFAULT_ANIMATED_POLICY = "keep_animated"
 DEFAULT_MAX_FRAMES = 512
@@ -192,8 +192,8 @@ class OutputSectionConfig(PluginConfigBase):
         default=None,
         ge=0,
         description=(
-            "静态图最长边像素上限，超过先等比预缩放再编码（避免在超大图上浪费压缩计算）；"
-            "0 表示不限制。动图不受此限制。留空使用插件内置默认。"
+            "图片最长边像素上限，超过先等比预缩放再编码（静态图与动图均适用）；"
+            "0 表示不限制（输出 webp 时仍受编码器 16383 像素硬上限约束）。留空使用插件内置默认。"
         ),
         json_schema_extra={"placeholder": str(DEFAULT_MAX_DIMENSION)},
     )
@@ -210,6 +210,8 @@ class AnimatedSectionConfig(PluginConfigBase):
         default="",
         description=(
             "动图处理策略：keep_animated=保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；"
+            "多帧尺寸不一致时仅保留最大尺寸的帧（如手机 MPO 主图 + 缩略图）；"
+            "编码失败时自动降级为首帧静态图，仍失败则原样放行。"
             "skip=动图原样放行；first_frame=只保留首帧转静态图。"
             "输出格式为 jpeg（无法承载动画）时 keep_animated 自动退化为 skip。留空使用插件内置默认。"
         ),
@@ -435,21 +437,31 @@ _LEGACY_BAKED_DEFAULTS: dict[str, dict[str, bool | float | int | str | list[str]
 }
 
 
+_PREVIOUS_BAKED_DEFAULTS: dict[str, dict[str, bool | float | int | str | list[str]]] = {
+    "output": {
+        "keep_only_if_smaller": True,
+        "max_dimension": 4096,
+    },
+}
+
+
 def _migrate_legacy_baked_defaults(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """将旧版 config.toml 中写死的默认值还原为占位空值，以便跟随代码内置默认。"""
     changed = False
-    for section_name, fields in _LEGACY_BAKED_DEFAULTS.items():
-        section = config.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        for key, legacy_value in fields.items():
-            if key not in section or section[key] != legacy_value:
+    legacy_sections = (_LEGACY_BAKED_DEFAULTS, _PREVIOUS_BAKED_DEFAULTS)
+    for fields_by_section in legacy_sections:
+        for section_name, fields in fields_by_section.items():
+            section = config.get(section_name)
+            if not isinstance(section, dict):
                 continue
-            if isinstance(legacy_value, str):
-                section[key] = ""
-            else:
-                section[key] = None
-            changed = True
+            for key, legacy_value in fields.items():
+                if key not in section or section[key] != legacy_value:
+                    continue
+                if isinstance(legacy_value, str):
+                    section[key] = ""
+                else:
+                    section[key] = None
+                changed = True
 
     plugin_section = config.get("plugin")
     if isinstance(plugin_section, dict):
@@ -689,29 +701,74 @@ def _compress_to_target(image: Image.Image, settings: RecompressSettings) -> byt
     return encoded
 
 
+def _collect_frame_entries(image: Image.Image) -> list[tuple[Image.Image, int]]:
+    """收集动图各帧及其时长（毫秒）。"""
+    entries: list[tuple[Image.Image, int]] = []
+    for frame in ImageSequence.Iterator(image):
+        duration = int(frame.info.get("duration", DEFAULT_FRAME_DURATION_MS)) or DEFAULT_FRAME_DURATION_MS
+        # Iterator 复用同一 Image 对象，必须 copy 以免各帧内容相同
+        entries.append((frame.copy(), duration))
+    return entries
+
+
+def _filter_largest_frame_entries(
+    entries: list[tuple[Image.Image, int]],
+) -> list[tuple[Image.Image, int]]:
+    """仅保留像素面积最大的帧；尺寸相同的多个帧全部保留（如立体对图）。"""
+    if len(entries) <= 1:
+        return entries
+    max_area = max(frame.width * frame.height for frame, _ in entries)
+    filtered = [(frame, duration) for frame, duration in entries if frame.width * frame.height == max_area]
+    return filtered if filtered else entries
+
+
+def _resolve_animated_dim_cap(settings: RecompressSettings) -> int:
+    """动图编码的最长边上限：与静态图共用 max_dimension，webp 再受编码器硬上限约束。"""
+    dim_cap = settings.max_dimension
+    if settings.out_format == "webp":
+        return WEBP_MAX_DIMENSION if dim_cap <= 0 else min(dim_cap, WEBP_MAX_DIMENSION)
+    return max(0, dim_cap)
+
+
+def _prepare_animated_frame(frame: Image.Image, target_size: tuple[int, int] | None) -> Image.Image:
+    """整理单帧为 RGBA，并在需要时缩放到统一尺寸。"""
+    rgba = frame.convert("RGBA")
+    if target_size is not None:
+        rgba = rgba.resize(target_size, Image.Resampling.LANCZOS)
+    return rgba
+
+
 def _encode_animated(image: Image.Image, settings: RecompressSettings) -> tuple[bytes, int, int]:
     """把多帧图片整体转为动画，保留每帧时长与循环次数。
 
+    多帧尺寸不一致时仅保留最大尺寸的帧（如 MPO 主图 + 缩略图/深度图）。
     webp 输出为动态 WebP，png 输出为 APNG；两者均保留逐帧时长与 loop。
 
     Returns:
         (encoded_bytes, final_width, final_height)
+
+    Raises:
+        ValueError: 无可用帧时抛出。
     """
-    # 动图不受 max_dimension 约束，但输出 webp 时仍受 WEBP_MAX_DIMENSION 硬限制，
-    # 超过则整体等比缩小（所有帧用同一目标尺寸，避免逐帧四舍五入产生不一致）。
+    frame_entries = _filter_largest_frame_entries(_collect_frame_entries(image))
+    if not frame_entries:
+        raise ValueError("动图无可用帧")
+
+    reference_frame = frame_entries[0][0]
+    dim_cap = _resolve_animated_dim_cap(settings)
     target_size: tuple[int, int] | None = None
-    if settings.out_format == "webp" and max(image.size) > WEBP_MAX_DIMENSION:
-        scale = WEBP_MAX_DIMENSION / max(image.size)
-        target_size = (max(16, round(image.width * scale)), max(16, round(image.height * scale)))
+    if dim_cap > 0 and max(reference_frame.size) > dim_cap:
+        scale = dim_cap / max(reference_frame.size)
+        target_size = (
+            max(16, round(reference_frame.width * scale)),
+            max(16, round(reference_frame.height * scale)),
+        )
 
     frames: list[Image.Image] = []
     durations: list[int] = []
-    for frame in ImageSequence.Iterator(image):
-        rgba = frame.convert("RGBA")
-        if target_size is not None:
-            rgba = rgba.resize(target_size, Image.Resampling.LANCZOS)
-        frames.append(rgba)
-        durations.append(int(frame.info.get("duration", DEFAULT_FRAME_DURATION_MS)) or DEFAULT_FRAME_DURATION_MS)
+    for frame, duration in frame_entries:
+        frames.append(_prepare_animated_frame(frame, target_size))
+        durations.append(duration)
 
     buffer = BytesIO()
     loop = int(image.info.get("loop", 0))
@@ -743,6 +800,14 @@ def _encode_animated(image: Image.Image, settings: RecompressSettings) -> tuple[
             compress_level=9,
         )
     return buffer.getvalue(), frames[0].width, frames[0].height
+
+
+def _encode_first_frame_static(
+    image: Image.Image, settings: RecompressSettings, orig_size: int
+) -> tuple[bytes, int | None, int, int]:
+    """取首帧按静态图编码。"""
+    image.seek(0)
+    return _encode_static_pipeline(image, settings, orig_size)
 
 
 def _recompress_blocking(data: bytes, settings: RecompressSettings) -> RecompressResult:
@@ -784,12 +849,27 @@ def _recompress_blocking(data: bytes, settings: RecompressSettings) -> Recompres
                             True,
                             orig_size=orig_size,
                         )
-                    new_bytes, final_width, final_height = _encode_animated(image, settings)
-                    final_quality = settings.max_quality if _quality_adjustable(settings) else None
+                    try:
+                        new_bytes, final_width, final_height = _encode_animated(image, settings)
+                        final_quality = settings.max_quality if _quality_adjustable(settings) else None
+                    except Exception as animated_exc:
+                        try:
+                            new_bytes, final_quality, final_width, final_height = _encode_first_frame_static(
+                                image, settings, orig_size
+                            )
+                        except Exception as static_exc:
+                            return RecompressResult(
+                                None,
+                                (
+                                    "动图压缩失败，已原样放行"
+                                    f"（keep_animated: {animated_exc}; first_frame: {static_exc}）"
+                                ),
+                                src_format,
+                                True,
+                                orig_size=orig_size,
+                            )
                 else:
-                    # first_frame：取首帧按静态图处理
-                    image.seek(0)
-                    new_bytes, final_quality, final_width, final_height = _encode_static_pipeline(
+                    new_bytes, final_quality, final_width, final_height = _encode_first_frame_static(
                         image, settings, orig_size
                     )
             else:

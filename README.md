@@ -50,7 +50,7 @@
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 是否启用插件 |
-| `config_version` | `"1.2.0"` | 配置版本 |
+| `config_version` | `"1.3.0"` | 配置版本 |
 
 ### [trigger] 触发条件
 
@@ -71,14 +71,14 @@
 | `max_quality` | `80` | webp/jpeg 编码质量**上限**（1-100）：图片超过阈值时实际质量会由估算/搜索往下调 |
 | `lossless` | `false` | WebP 无损模式：固定用最高压缩率参数（quality=100 + method=6）编码，超阈值时只能缩像素尺寸 |
 | `webp_method` | `4` | WebP 有损编码 method（0-6），越大越慢压缩率越高；无损固定用 6 |
-| `keep_only_if_smaller` | `true` | 压缩结果不比原图小则保留原图 |
-| `max_dimension` | `4096` | 静态图最长边像素上限，超过先等比预缩放；`0` 不限制（动图不受此限制） |
+| `keep_only_if_smaller` | `false` | 仅当压缩结果比原图更小时才替换，否则仍写入新格式 |
+| `max_dimension` | `2000` | 最长边像素上限，超过先等比预缩放；`0` 不限制（静态图与动图均适用） |
 
 ### [animated] 动图
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `policy` | `"keep_animated"` | `keep_animated`=保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；`skip`=原样放行；`first_frame`=只留首帧 |
+| `policy` | `"keep_animated"` | `keep_animated`=保留动画并按输出格式编码（webp→动态 WebP，png→APNG）；多帧尺寸不一致时仅保留最大尺寸的帧；编码失败时自动降级为首帧静态图，仍失败则原样放行；`skip`=原样放行；`first_frame`=只留首帧 |
 | `max_frames` | `512` | 帧数超过上限的动图跳过，防止编码耗时过久；`0` 不限制 |
 
 注意：jpeg 无法承载动画，输出 jpeg 时 `keep_animated` 在运行时退化为 `skip`，加载时会告警一次（webp / png 可保留动画）。
