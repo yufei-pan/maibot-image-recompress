@@ -443,8 +443,44 @@ def test_target_size_loop() -> None:
     print(f"ok: target_size loop ({len(data)} -> {len(result.new_bytes)} bytes, target {target})")
 
 
+
+def test_webui_blank_and_none_persist() -> None:
+    """Optional 默认 None / WebUI 空串不得出现在落盘配置中。"""
+    inst = recompress_plugin.create_plugin()
+    normalized, _ = inst.normalize_plugin_config({})
+    assert all(v is not None for v in _flatten(normalized))
+    blanked, _ = inst.normalize_plugin_config(
+        {
+            "plugin": {"enabled": True, "config_version": recompress_plugin.CURRENT_CONFIG_VERSION},
+            "trigger": {"size_threshold_mb": "", "min_source_size_kb": "  "},
+            "output": {"max_quality": ""},
+            "performance": {"max_parallel_images": ""},
+        }
+    )
+    assert all(v is not None for v in _flatten(blanked))
+    assert "size_threshold_mb" not in blanked.get("trigger", {})
+    assert "max_quality" not in blanked.get("output", {})
+    print("ok: webui blank/None omitted for toml persist")
+
+
+def _flatten(value: object) -> list[object]:
+    if isinstance(value, dict):
+        items: list[object] = []
+        for nested in value.values():
+            items.extend(_flatten(nested))
+        return items
+    if isinstance(value, list):
+        items = []
+        for nested in value:
+            items.extend(_flatten(nested))
+        return items
+    return [value]
+
+
+
 def main() -> None:
     test_plugin_importable()
+    test_webui_blank_and_none_persist()
     test_static_png_to_webp()
     test_rgba_alpha_preserved()
     test_jpeg_output_flattens_alpha()

@@ -23,11 +23,13 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Iterator
+from types import UnionType
+from typing import Any, Iterator, Union, get_args, get_origin
 
 from PIL import Image, ImageOps, ImageSequence
 
 from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, HookHandler, MaiBotPlugin, PluginConfigBase
+from maibot_sdk.config import validate_plugin_config
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
 # --------------------------------------------------------------------------- #
@@ -308,6 +310,81 @@ class ImageRecompressConfig(PluginConfigBase):
     animated: AnimatedSectionConfig = Field(default_factory=AnimatedSectionConfig)
     advanced: AdvancedSectionConfig = Field(default_factory=AdvancedSectionConfig)
     performance: PerformanceSectionConfig = Field(default_factory=PerformanceSectionConfig)
+
+
+
+def _annotation_allows_none(annotation: Any) -> bool:
+    """判断类型注解是否允许 ``None``（如 ``int | None``）。"""
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        return type(None) in get_args(annotation)
+    return annotation is type(None)
+
+
+def _unwrap_optional_annotation(annotation: Any) -> Any:
+    """剥掉 ``X | None``，返回内层类型。"""
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        args = [item for item in get_args(annotation) if item is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return annotation
+
+
+def _coerce_webui_blank_optionals(data: Any, model: type[Any]) -> Any:
+    """WebUI 清空 Optional 字段会提交空字符串；转为 None 以便跟随内置默认。"""
+    if not isinstance(data, Mapping):
+        return data
+    model_fields = getattr(model, "model_fields", None)
+    if not isinstance(model_fields, dict):
+        return dict(data)
+    cleaned = dict(data)
+    for name, field_info in model_fields.items():
+        if name not in cleaned:
+            continue
+        value = cleaned[name]
+        annotation = field_info.annotation
+        inner = _unwrap_optional_annotation(annotation)
+        if hasattr(inner, "model_fields") and isinstance(value, Mapping):
+            cleaned[name] = _coerce_webui_blank_optionals(value, inner)
+            continue
+        origin = get_origin(inner)
+        if origin is list and isinstance(value, list):
+            args = get_args(inner)
+            item_type = args[0] if args else None
+            if item_type is not None and hasattr(item_type, "model_fields"):
+                cleaned[name] = [
+                    _coerce_webui_blank_optionals(item, item_type) if isinstance(item, Mapping) else item
+                    for item in value
+                ]
+            continue
+        if isinstance(value, str) and not value.strip() and _annotation_allows_none(annotation):
+            cleaned[name] = None
+    return cleaned
+
+
+def _strip_none_deep(value: Any) -> Any:
+    """递归移除 ``None``，避免 Runner/WebUI 用 tomlkit 落盘时 ConvertError。"""
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, nested in value.items():
+            if nested is None:
+                continue
+            stripped = _strip_none_deep(nested)
+            if stripped is None:
+                continue
+            cleaned[key] = stripped
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_none_deep(item) for item in value if item is not None]
+    return value
+
+
+def _dump_config_for_persist(config: Mapping[str, Any]) -> dict[str, Any]:
+    """生成可写回 config.toml 的配置（tomlkit 不支持 ``None``）。"""
+    validated = validate_plugin_config(ImageRecompressConfig, config)
+    dumped = validated.model_dump(mode="python", exclude_none=True)
+    return _strip_none_deep(dumped)
 
 
 # --------------------------------------------------------------------------- #
@@ -953,9 +1030,11 @@ class ImageRecompressPlugin(MaiBotPlugin):
     def normalize_plugin_config(
         self, config_data: Mapping[str, Any] | None
     ) -> tuple[dict[str, Any], bool]:
-        normalized, changed = super().normalize_plugin_config(config_data)
+        sanitized = _coerce_webui_blank_optionals(dict(config_data or {}), ImageRecompressConfig)
+        normalized, changed = super().normalize_plugin_config(sanitized)
         migrated, migrated_changed = _migrate_legacy_baked_defaults(normalized)
-        return migrated, changed or migrated_changed
+        persistable = _dump_config_for_persist(migrated)
+        return persistable, changed or migrated_changed or persistable != migrated
 
     def _effective(self) -> EffectiveImageRecompressConfig:
         return resolve_effective_config(self.config)
