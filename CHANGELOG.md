@@ -1,0 +1,50 @@
+# Changelog
+
+本文件记录 maibot-image-recompress（智能入站图片重压缩）的版本变更。
+
+格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/)，
+版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
+
+## [0.2.4] - 2026-07-11
+
+### 修复
+
+- 持久化配置前去除 `None`；WebUI 清空可选字段时按默认值处理
+
+## [0.2.3] - 2026-06-21
+
+### 修复
+
+- 混合分辨率多帧图（如手机 MPO）仅保留最大帧
+- 动图输出应用 `max_dimension`；`keep_animated` 失败时回退 `first_frame` 再 skip
+
+### 变更
+
+- 默认改为 `keep_only_if_smaller=false`、`max_dimension=2000`
+
+## [0.2.2] - 2026-06-14
+
+### 修复
+
+- 静态 / 动图输出强制 WebP 单边 ≤16383px，超宽高图先缩小再编码，避免静默失败
+
+## [0.2.1] - 2026-06-14
+
+### 变更
+
+- verbose 模式记录实际编码使用的 `final_width` / `final_height` / `final_quality`
+
+## [0.2.0] - 2026-06-13
+
+### 变更
+
+- 空配置字段升级时跟随代码默认值；恢复详细 `config.toml` 注释
+- `keep_animated` 策略、APNG 输出；`config_version` 1.2.0 迁移
+- 插件更名为「智能入站图片重压缩」；`animated_webp` 由 `keep_animated` 替代
+
+## [0.1.0] - 2026-06-12
+
+### 新增
+
+- 首次发布：入站图片智能重压缩
+- 提醒使用前关闭 Host `visual.handle_oversized_images`
