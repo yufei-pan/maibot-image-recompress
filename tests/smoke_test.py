@@ -127,12 +127,14 @@ def test_plugin_importable() -> None:
     assert effective.max_quality == recompress_plugin.DEFAULT_MAX_QUALITY
     assert effective.max_parallel_images == recompress_plugin.DEFAULT_MAX_PARALLEL_IMAGES
 
-    # config.toml 与配置模型字段一致（允许省略留空字段，不允许多出未知字段）
-    config_data = tomllib.loads((PLUGIN_DIR / "config.toml").read_text(encoding="utf-8"))
+    # config.default.toml 与配置模型字段一致（允许省略留空字段，不允许多出未知字段）
+    shipped = PLUGIN_DIR / "config.default.toml"
+    assert shipped.is_file(), "缺少随仓库分发的 config.default.toml"
+    config_data = tomllib.loads(shipped.read_text(encoding="utf-8"))
     for section, fields in config_data.items():
-        assert section in default_config, f"config.toml 中存在未知配置节：{section}"
+        assert section in default_config, f"config.default.toml 中存在未知配置节：{section}"
         for field in fields:
-            assert field in default_config[section], f"config.toml 中存在未知字段：{section}.{field}"
+            assert field in default_config[section], f"config.default.toml 中存在未知字段：{section}.{field}"
     print("ok: plugin importable, config model consistent")
 
 
